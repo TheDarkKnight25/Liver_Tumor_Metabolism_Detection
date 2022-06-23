@@ -8,6 +8,7 @@ from tqdm import tqdm
 import gzip
 import pickle
 import gc
+import registration as reg
 
 Main_Attributes = {
     'Source_Folder':'sourceFolder', 
@@ -41,8 +42,7 @@ class Path_Settings:
         # list of os.path objs for eg: [<os_obj>'1.3.24.34342', [<os_obj>'2', <os_obj>'3', <os_obj>'4']]
         self.source_folders = []
         
-        self.Refresh()
-
+        self.Refresh( print_progress = False )
 
         self.saved_serialization = [int(f.name) for f in self.save_folders]
         if len(self.saved_serialization) != 0:
@@ -67,14 +67,14 @@ class Path_Settings:
             serialize = self.serialize
         return source_folder, str(serialize) 
         
-    def Refresh(self):
+    def Refresh(self, print_progress = True):
         self.save_folders = [f for f in os.scandir(self.save_path) if f.is_dir()]
         self.processed_source_folders = []
         for f in self.save_folders:
             patient_desc = pd.read_csv(os.path.join(f.path, 'patient_description.csv'))
             self.processed_source_folders.append(patient_desc['Values'][0])
         
-        self.source_folders = self.get_all_source_folders()
+        self.source_folders = self.get_all_source_folders(print_progress = print_progress)
 
         for f_name in self.processed_source_folders:
             for f in self.source_folders:
@@ -87,23 +87,34 @@ class Path_Settings:
     def Reset(self):
         return 
 
-    def get_all_source_folders(self):
+    def get_all_source_folders(self, print_progress = True):
 
         all_folders = []
         total_count = 0
 
-        for folder in tqdm([f for f in os.scandir(self.source_path) if f.is_dir()]):
-            subs = [f for f in os.scandir(folder.path) if f.is_dir()]
-            sub_name = folder.name 
-            temp = []
-            for sub in subs:
-                if sub.name in self.scan_for_folders:
-                    temp.append(sub)
-            if len(temp) > 0:
-                all_folders.append([folder, temp])
-                total_count += len(temp)
-
-        print(f'- Found {len(all_folders)} folders with a total of {total_count} scans')
+        if print_progress == True:
+            for folder in tqdm([f for f in os.scandir(self.source_path) if f.is_dir()]):
+                subs = [f for f in os.scandir(folder.path) if f.is_dir()]
+                sub_name = folder.name 
+                temp = []
+                for sub in subs:
+                    if sub.name in self.scan_for_folders:
+                        temp.append(sub)
+                if len(temp) > 0:
+                    all_folders.append([folder, temp])
+                    total_count += len(temp)
+            print(f'- Found {len(all_folders)} folders with a total of {total_count} scans')
+        else:
+            for folder in [f for f in os.scandir(self.source_path) if f.is_dir()]:
+                subs = [f for f in os.scandir(folder.path) if f.is_dir()]
+                sub_name = folder.name 
+                temp = []
+                for sub in subs:
+                    if sub.name in self.scan_for_folders:
+                        temp.append(sub)
+                if len(temp) > 0:
+                    all_folders.append([folder, temp])
+                    total_count += len(temp)
         return all_folders 
 
 
@@ -249,6 +260,20 @@ class Pickle_Gzip:
             return pickle.load(f)
 
 
+class Save:
+
+    def __init__(self, save_folder_path):
+        self.save_folder_path = save_folder_path
+        self.save_obj = Pickle_Gzip(save_folder_path)
+
+    def save(self, data, file_name):
+        self.save_obj.save(data, file_name)
+
+    def load(self, file_name):
+        load_path = os.path.join(self.save_folder_path, file_name + self.extension)
+        return self.save_obj.load(load_path)
+
+
 class Stream_Data:
 
     def __init__(self, path_settings_obj):    
@@ -256,6 +281,30 @@ class Stream_Data:
         self.save_path = path_settings_obj.save_path
         self.patient_folders = sorted(self.get_folders(), key = lambda x: int(x.name))
         
+    def save_transform_points(self,folder, img_a, img_b, points_a, points_b):
+        save_path = os.path.join(self.save_path, folder)
+        self.save_obj.path = save_path
+        self.save_obj.save([img_a, img_b, points_a, points_b], 'transformation_points')
+        return
+
+    def get_scans(self, folder_name, scan_a, scan_b, transform = False):
+        scan_a_array = self.get(folder_name, scan_a)
+        scan_b_array = self.get(folder_name, scan_b)
+
+        if transform == False:
+            return scan_a_array, scan_b_array
+        
+        points_path = os.path.join(self.save_path, folder_name, f'transformation_points{self.save_obj.extension}')
+        img_a, img_b, pts_a, pts_b = self.save_obj.load(points_path)
+        trf_obj = reg.TransFormation(img_a, img_b, pts_a, pts_b)
+
+        transformed_frames = []
+        for y in scan_b_array:
+            transformed_frames.append(trf_obj.transform(y))
+
+        transformed_frames = np.array(transformed_frames)
+        return scan_a_array, transformed_frames
+
 
     def get_folders(self):
         return [f for f in os.scandir(self.save_path) if f.is_dir()]
@@ -319,8 +368,13 @@ class Stream_Data:
         return 
 
     def get(self, folder_name, scan_name):
-            
         scan_file = scan_name + f'{self.save_obj.extension}'
         scan_path = os.path.join(self.save_path, folder_name, scan_file)
         print(scan_path)
         return self.save_obj.load(scan_path)
+        
+
+    
+
+
+
